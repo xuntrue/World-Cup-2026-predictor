@@ -1,0 +1,3 @@
+[submodule "vendor/international_results"]
+	path = vendor/international_results
+	url = https://github.com/martj42/international_results.git
