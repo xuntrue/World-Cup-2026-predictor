@@ -7,10 +7,11 @@ Run:
     python -m src.load_data
 """
 
-from ast import Dict
+from typing import Optional, Dict
 from pathlib import Path
 import pandas as pd
-#import time
+import re
+import time
 
 ROOT = Path(__file__).resolve().parents[1]  # repo root
 DATA_DIR = ROOT / "vendor" / "international_results"
@@ -44,10 +45,33 @@ def load_csv(path: Path) -> pd.DataFrame:
 
     return df
 
+def print_value_counts(
+    df: "pd.DataFrame",
+    col: str, *,
+    normalize: bool = False,
+    dropna: bool = False,
+    topk: int | None = None
+) -> None:
+    counts = df[col].value_counts(dropna=dropna, normalize=normalize)
+    if topk is not None:
+        counts = counts.head(topk)
+    print(counts.to_string())
+
+def print_all_columns_value_counts(
+    df: pd.DataFrame, *,
+    normalize: bool = False,
+    dropna: bool = False,
+    topk: int | None = None
+) -> None:
+    for col in df.columns:
+        print_value_counts(df, col, normalize=normalize, dropna=dropna, topk=topk)
+
 def _normalize_team_text(x: object) -> str:
     if pd.isna(x):
         return ""
-    return str(x).strip()
+    s = str(x).strip()
+    s = re.sub(r"\s+", " ", s)  # collapse internal whitespace
+    return s.upper()            # normalize case
 
 def standardize_team_names(
     df: pd.DataFrame,
@@ -62,14 +86,17 @@ def standardize_team_names(
     end_date_col: str = "end_date",
 ) -> pd.DataFrame:
     """
-    Standardize team names using former_names.csv.
-    If use_date_aware_mapping=True, map names based on match date being within [start_date, end_date] for that former territory.
+    Standardize team names using former_names_df.
+
+    - Non-date-aware: map former -> current regardless of date.
+    - Date-aware: map former -> current only when match date is within [start_date, end_date]
+      for that former entry.
     """
 
     out = df.copy()
-    out[team_col] = out[team_col].map(_normalize_team_text)
 
     if former_names_df is None:
+        out[team_col] = out[team_col].map(_normalize_team_text)
         return out
 
     required = {current_col, former_col, start_date_col, end_date_col}
@@ -77,88 +104,80 @@ def standardize_team_names(
     if missing:
         raise ValueError(f"former_names_df is missing columns: {sorted(missing)}")
 
-    if not use_date_aware_mapping:
-        # former -> current (ignores dates)
-        mapping: Dict[str, str] = (
-            former_names_df.dropna(subset=[former_col, current_col])
-            .drop_duplicates(subset=[former_col], keep="first")
-            .set_index(former_col)[current_col]
-            .to_dict()
-        )
-        out[team_col] = out[team_col].map(lambda t: mapping.get(t, t))
-        return out
-
-    if date_col not in out.columns:
-        raise ValueError(f"use_date_aware_mapping=True but '{date_col}' column not found.")
-
-    # Parse dates once.
-    out[date_col] = pd.to_datetime(out[date_col], errors="coerce")
-
+    # Normalize inputs
+    out[team_col] = out[team_col].map(_normalize_team_text)
     fn = former_names_df.copy()
     fn[former_col] = fn[former_col].map(_normalize_team_text)
     fn[current_col] = fn[current_col].map(_normalize_team_text)
-    fn[start_date_col] = pd.to_datetime(fn[start_date_col], errors="coerce")
-    fn[end_date_col] = pd.to_datetime(fn[end_date_col], errors="coerce")
 
-    # Pre-index intervals per former name
-    intervals_by_former: Dict[str, pd.DataFrame] = {}
-    for former_name, g in fn.groupby(former_col, sort=False):
-        intervals_by_former[former_name] = g[[start_date_col, end_date_col, current_col]].copy()
+    # Ensure match dates are datetime (only used in date-aware mode)
+    if use_date_aware_mapping:
+        if date_col not in out.columns:
+            raise ValueError(f"use_date_aware_mapping=True but '{date_col}' column not found.")
+        out[date_col] = pd.to_datetime(out[date_col], errors="coerce")
+        dates = out[date_col]
 
-    # Build result column
-    out[team_col + "__mapped"] = out[team_col]
-    for team_name, idx in out.groupby(team_col).groups.items():
-        if team_name == "" or team_name is None:
-            continue
-        if team_name not in intervals_by_former:
-            continue
-        match_dates = out.loc[idx, date_col]
-        valid_mask = match_dates.notna()
-        if not valid_mask.any():
-            continue
-        g_intervals = intervals_by_former[team_name]
+        fn[start_date_col] = pd.to_datetime(fn[start_date_col], errors="coerce")
+        fn[end_date_col] = pd.to_datetime(fn[end_date_col], errors="coerce")
+        # handle open-ended end_date
+        fn[end_date_col] = fn[end_date_col].fillna(pd.Timestamp.max)
 
-        # Determine mapping for each date in this group by checking interval inclusion
-        mapped = out.loc[idx, team_col + "__mapped"].copy()
-        unmapped_mask = valid_mask
+        # Build mapped column
+        out["_team_mapped"] = out[team_col]
 
-        # Treat NaT start/end as unbounded sides
-        for _, row in g_intervals.iterrows():
-            start_d = row[start_date_col]
-            end_d = row[end_date_col]
-            target = row[current_col]
+        # Loop per former name (no per-row loops); inside each former, loop intervals only
+        # (usually small). If overlaps exist, later intervals (sorted by start_date) overwrite.
+        base = out[team_col]
 
-            if pd.isna(start_d):
-                left_ok = pd.Series(True, index=match_dates.index)
-            else:
-                left_ok = match_dates <= match_dates.index.map(lambda _: match_dates)  # dummy
+        for former_name, g in fn.groupby(former_col, sort=False):
+            if not former_name:
+                continue
 
-            # Vectorized inclusion for this interval:
-            if pd.isna(start_d):
-                left_ok = pd.Series(True, index=match_dates.index)
-            else:
-                left_ok = match_dates >= start_d
+            idx = base.eq(former_name)
+            if not idx.any():
+                continue
 
-            if pd.isna(end_d):
-                right_ok = pd.Series(True, index=match_dates.index)
-            else:
-                right_ok = match_dates <= end_d
+            # Only consider rows where team == former_name and match date is valid
+            rows_idx = out.index[idx]
+            sub_idx = rows_idx[dates.loc[rows_idx].notna()]
+            if len(sub_idx) == 0:
+                continue
 
-            interval_ok = left_ok & right_ok
+            g = g[[start_date_col, end_date_col, current_col]].copy()
+            g = g.dropna(subset=[start_date_col, end_date_col])
+            if g.empty:
+                continue
 
-            # Only fill still-unmapped rows
-            fill_mask = unmapped_mask & interval_ok
-            if fill_mask.any():
-                mapped.loc[fill_mask] = target
-                unmapped_mask = unmapped_mask & (~interval_ok)
+            # Deterministic overwrite rule: later start_date wins
+            g = g.sort_values([start_date_col, end_date_col], kind="mergesort")
 
-            if not unmapped_mask.any():
-                break
+            sub_dates = dates.loc[sub_idx].to_numpy()
 
-        out.loc[idx, team_col + "__mapped"] = mapped
+            mapped = out.loc[sub_idx, "_team_mapped"].to_numpy()
 
-    out[team_col] = out[team_col + "__mapped"]
-    out = out.drop(columns=[team_col + "__mapped"])
+            # Apply each interval vectorized for this former group
+            for _, row in g.iterrows():
+                s = row[start_date_col]
+                e = row[end_date_col]
+                target = row[current_col]
+
+                ok = (sub_dates >= s) & (sub_dates <= e)
+                if ok.any():
+                    mapped[ok] = target
+
+            out.loc[sub_idx, "_team_mapped"] = mapped
+
+        out[team_col] = out["_team_mapped"]
+        out = out.drop(columns=["_team_mapped"], errors="ignore")
+        return out
+
+    # Non-date-aware mapping
+    mapping_df = (
+        fn.dropna(subset=[former_col, current_col])
+          .drop_duplicates(subset=[former_col], keep="first")
+          .set_index(former_col)[current_col]
+    )
+    out[team_col] = out[team_col].map(mapping_df).fillna(out[team_col])
     return out
 
 def main():
@@ -169,16 +188,17 @@ def main():
     results_df = load_csv(files["results"])
     shootouts_df = load_csv(files["shootouts"])
     goalscorers_df = load_csv(files["goalscorers"])
+    former_names_df = load_csv(files["former_names"])
 
     # Toggle: set to False if you want to use current territory names.
     FORMER_NAMES = False
-    USE_DATE_AWARE_MAPPING = False
+    USE_DATE_AWARE_MAPPING = True
     if not FORMER_NAMES:
         print("\nLoading former_names.csv...")
         former_names_df = load_csv(files["former_names"])
         print("former_names.csv loaded. Starting standardization...")
-        
-        #start = time.perf_counter() # code you want to time
+
+        start = time.perf_counter() # code you want to time
       
         targets = [
             ("results_df", results_df, "home_team"),
@@ -192,24 +212,32 @@ def main():
 
         for i, (df_label, df_ref, col) in enumerate(targets, start=1):
             print(f"\n[{i}/{len(targets)}] Standardizing {df_label}:{col} (rows={len(df_ref):,})...")
-            df_ref = standardize_team_names(
-                df_ref,
-                col,
-                former_names_df,
-                use_date_aware_mapping=USE_DATE_AWARE_MAPPING,
-                date_col="date",
-            )
-            # Write back
-            if df_ref is results_df:
-                results_df = df_ref
-            elif df_ref is shootouts_df:
-                shootouts_df = df_ref
-            elif df_ref is goalscorers_df:
-                goalscorers_df = df_ref
-        print("\nAll team names standardized.")
+            if df_label == "results_df":
+                results_df = standardize_team_names(
+                    results_df, col, former_names_df,
+                    use_date_aware_mapping=USE_DATE_AWARE_MAPPING,
+                    date_col="date",
+                )
+            elif df_label == "shootouts_df":
+                shootouts_df = standardize_team_names(
+                    shootouts_df, col, former_names_df,
+                    use_date_aware_mapping=USE_DATE_AWARE_MAPPING,
+                    date_col="date",
+                )
+            elif df_label == "goalscorers_df":
+                goalscorers_df = standardize_team_names(
+                    goalscorers_df, col, former_names_df,
+                    use_date_aware_mapping=USE_DATE_AWARE_MAPPING,
+                    date_col="date",
+                )
+        if USE_DATE_AWARE_MAPPING:
+            print("\nAll team names standardized using date-aware former->current mapping.")
+        else:
+            print("\nAll team names standardized using former->current mapping (ignoring dates).")
+
         
-        #elapsed = time.perf_counter() - start
-        #print(f"Elapsed: {elapsed:.3f} seconds")
+        elapsed = time.perf_counter() - start
+        print(f"Elapsed: {elapsed:.4f} seconds")
 
     print("\nAll CSV files loaded successfully.")
 
