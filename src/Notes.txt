@@ -1,0 +1,22 @@
+Unmapped 'results.csv' records in 'country': 6
+
+IRISH FREE STATE: 1 records
+  Valid ranges in former_names.csv:
+    Republic of Ireland: 1924-05-28 to 1936-12-06
+  Actual match dates:
+    1937-11-07 00:00:00
+
+CEYLON: 3 records
+  Valid ranges in former_names.csv:
+    Sri Lanka: 1952-03-24 to 1972-05-22
+  Actual match dates:
+    1952-03-14 00:00:00
+    1952-03-18 00:00:00
+    1952-03-23 00:00:00
+
+MALAYA: 2 records
+  Valid ranges in former_names.csv:
+    Malaysia: 1948-06-20 to 1963-08-16
+  Actual match dates:
+    1963-08-17 00:00:00
+    1963-08-18 00:00:0
