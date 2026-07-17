@@ -298,13 +298,13 @@ def debug_unmapped_records(
         for _, rec in records.iterrows():
             print(f"    {rec[date_col]}")
 
-def main():
+def load_data():
     if VERBOSE:
         print("=== World-Cup-2026 Predictor: Data Loading ===")
         print(f"Project root: {ROOT}")
         print(f"Using data directory: {DATA_DIR}")
 
-    start = time.perf_counter() # code you want to time
+    #start = time.perf_counter() # code you want to time
 
     results_df = load_csv(files["results"])
     shootouts_df = load_csv(files["shootouts"])
@@ -386,9 +386,10 @@ def main():
             # Debug: show why some records weren't mapped
             debug_unmapped_records(results_df, former_names_df)
 
-    elapsed = time.perf_counter() - start
-    print(f"Elapsed: {elapsed:.4f} seconds")
+    #elapsed = time.perf_counter() - start
+    #print(f"Elapsed: {elapsed:.4f} seconds")
     print("\nAll CSV files loaded successfully.")
+    return results_df, shootouts_df, goalscorers_df, former_names_df
 
 if __name__ == "__main__":
-    main()
+    load_data()
