@@ -16,7 +16,7 @@ import pandas as pd
 results_df, _, _, _ = load_data()
 
 # ===== Elo config =====
-INITIAL_ELO = 1200
+INITIAL_ELO = 800
 K_FACTOR = 40  # Standard K-factor = 32 (higher means more volatile ratings)
 VERBOSE = True  # Set to False to suppress match-by-match output
 
@@ -75,8 +75,8 @@ def train_elo(results_df):
         goal_multiplier = 1 + (goal_diff * 0.05)  # Each goal adds 5% more change
         
         # Calculate rating changes
-        home_change = K_FACTOR * goal_multiplier * (home_actual - home_expected)
-        away_change = K_FACTOR * goal_multiplier * (away_actual - away_expected)
+        home_change = calculate_rating_change(home_actual, home_expected, K_FACTOR) * goal_multiplier
+        away_change = calculate_rating_change(away_actual, away_expected, K_FACTOR) * goal_multiplier
         
         # Update ratings
         team_ratings[home_team] += home_change
@@ -121,6 +121,22 @@ def expected_score(elo_a: float, elo_b: float) -> float:
     """
     return 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
 
+def calculate_rating_change(actual, expected, k_factor):
+    """
+    Asymmetric: wins matter more than losses.
+    Helps teams climb faster, creating positive skew.
+    """
+    change = k_factor * (actual - expected)
+    
+    # Amplify wins, dampen losses
+    if change > 0:  # Win or draw vs. expected loss
+        return change * 1.1  # 10% bonus on gains
+    else:  # Loss or draw vs. expected win
+        return change * 0.9  # 10% reduction on losses
+    
+    return change
+
+
 def get_team_rating(team_name: str, team_ratings: dict) -> float:
     """
     Get a team's current Elo rating.
@@ -148,7 +164,7 @@ def save_elo_results(team_ratings: dict,
     history_df.to_csv(history_file, index=False)
     print(f"✓ Saved {len(history_df)} match records to '{history_file}'")
 
-def load_elo_results(ratings_file: str = "data/rating_history.csv",
+def load_elo_results(ratings_file: str = "data/team_elo.csv",
                      history_file: str = "data/rating_history.csv") -> tuple:
     """
     Load cached Elo results from CSV files.
@@ -296,7 +312,7 @@ def plot_elo_distribution(team_ratings: dict, stats: dict, save: bool) -> None:
     
     # --- LEFT: Histogram with overlays ---
     ax1 = axes[0]
-    ax1.hist(ratings, bins=60, color='steelblue', alpha=0.7, edgecolor='black')
+    ax1.hist(ratings, bins=15, color='steelblue', alpha=0.7, edgecolor='black')
     
     # Add vertical lines for key statistics
     ax1.axvline(stats['mean'], color='red', linestyle='--', linewidth=2, label=f"Mean: {stats['mean']:.0f}")
