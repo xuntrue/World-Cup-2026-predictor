@@ -8,12 +8,13 @@ Run:
 """
 
 from load_data import load_data
-from elo_model import load_elo
+from elo_model import  load_elo_results
 
 # Load all dataframes
-results_df, shootouts_df, goalscorers_df = load_data()
+#results_df, shootouts_df, goalscorers_df = load_data()
 
-train_elo(results_df)
+# Get team elo ratings
+team_ratings, _ = load_elo_results()
 
 #train_match_model()
 

@@ -12,13 +12,18 @@ import matplotlib.pyplot as plt
 import os
 import pandas as pd
 
-# Load all dataframes
+# Load all dataframesdsa
 results_df, _, _, _ = load_data()
 
 # ===== Elo config =====
 INITIAL_ELO = 800
-K_FACTOR = 40  # Standard K-factor = 32 (higher means more volatile ratings)
-VERBOSE = True  # Set to False to suppress match-by-match output
+VERBOSE = False  # Set to False to suppress match-by-match output
+
+K_FACTOR_TABLE = {
+    "FIFA World Cup": 60,
+    "FIFA World Cup qualification": 40,
+    "Friendly": 20,
+}
 
 def train_elo(results_df):
     """
@@ -40,16 +45,24 @@ def train_elo(results_df):
     # Sort matches chronologically
     matches = results_df.sort_values("date").reset_index(drop=True)
     
+    start_date = None
+    end_date = '2026-06-11'
+    if start_date is not None:
+        matches = matches[matches["date"] >= start_date]
+    if end_date is not None:
+        matches = matches[matches["date"] < end_date]
+
     # Track history (optional but useful for debugging/analysis)
     rating_history = []
     
     # Process each match
     for idx, match in matches.iterrows():
+        match_date = match["date"]
         home_team = match["home_team"]
         away_team = match["away_team"]
         home_score = match["home_score"]
         away_score = match["away_score"]
-        match_date = match["date"]
+        tournament_type = match.get("tournament")
 
         # Get current ratings
         home_elo = team_ratings[home_team]
@@ -69,6 +82,9 @@ def train_elo(results_df):
             home_actual, away_actual = 0.0, 1.0
         else:
             home_actual, away_actual = 0.5, 0.5
+
+        # Get  K-FACTOR DYNAMICALLY
+        K_FACTOR = get_k_factor(tournament_type)
         
         # Calculate goal difference multiplier (optional: amplify rating change for blowouts)
         goal_diff = abs(home_score - away_score)
@@ -85,6 +101,7 @@ def train_elo(results_df):
         # Store history
         rating_history.append({
             "date": match_date,
+            "tournament_type": tournament_type,
             "home_team": home_team,
             "away_team": away_team,
             "home_score": home_score,
@@ -93,6 +110,7 @@ def train_elo(results_df):
             "away_elo_before": away_elo,
             "home_elo_after": team_ratings[home_team],
             "away_elo_after": team_ratings[away_team],
+
         })
     
     if VERBOSE:
@@ -121,6 +139,10 @@ def expected_score(elo_a: float, elo_b: float) -> float:
     """
     return 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
 
+def get_k_factor(tournament_type: str) -> int:
+    """Look up K-factor based on match importance."""
+    return K_FACTOR_TABLE.get(tournament_type, 30)
+
 def calculate_rating_change(actual, expected, k_factor):
     """
     Asymmetric: wins matter more than losses.
@@ -130,12 +152,11 @@ def calculate_rating_change(actual, expected, k_factor):
     
     # Amplify wins, dampen losses
     if change > 0:  # Win or draw vs. expected loss
-        return change * 1.1  # 10% bonus on gains
-    else:  # Loss or draw vs. expected win
-        return change * 0.9  # 10% reduction on losses
+        return change * 1.2  # 20% bonus on gaiwns
+    else:  # Loss or draw vs. expected winas
+        return change * 0.8  # 20% reduction on losses
     
     return change
-
 
 def get_team_rating(team_name: str, team_ratings: dict) -> float:
     """
@@ -427,11 +448,11 @@ if __name__ == "__main__":
         print_elo_statistics(stats)
         plot_elo_distribution(team_ratings, stats, save=False)
 
-         # Plot individual team histories
-        print("\n=== Team Elo History Plots ===")
+        # Plot individual team histories
+        #print("\n=== Team Elo History Plots ===")
         #plot_team_elo_history('FRANCE', save=False)
         #plot_team_elo_history('SPAIN', save=False)
         #plot_team_elo_history('ARGENTINA', save=False)
     
         # Plot multiple teams together
-        plot_multiple_teams_elo_history(['FRANCE', 'SPAIN', 'BRAZIL', 'GERMANY', 'ARGENTINA'], save=False)
+        #plot_multiple_teams_elo_history(['FRANCE', 'SPAIN', 'BRAZIL', 'GERMANY', 'ARGENTINA'], save=False)
