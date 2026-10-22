@@ -1,20 +1,12 @@
-# src/load_data.py
-"""
-Load the CSV files from the vendored international_results dataset
-and print clear, beginner-friendly summaries.
-
-Run:
-    python -m src.load_data
-"""
-
 from typing import Optional, Dict
 from pathlib import Path
+
 import pandas as pd
 import re
 import time
 
 # ===== CONFIG =====
-ROOT = Path(__file__).resolve().parents[1]  # repo root
+ROOT = Path(__file__).resolve().parents[2]  # repo root
 DATA_DIR = ROOT / "vendor" / "international_results"
 VERBOSE = False # Set to True to see detailed loading/standarization output
 
@@ -48,6 +40,23 @@ def load_csv(path: Path) -> pd.DataFrame:
 
     return df
 
+def filter_by_date(df: pd.DataFrame, col: str, start=None, end=None) -> pd.DataFrame:
+    """ Keep rows where start <= df[col] <= end """
+    mask = pd.Series(True, index=df.index)
+
+    if start is not None:
+        mask &= df[col] >= pd.Timestamp(start)
+    if end is not None:
+        mask &= df[col] <= pd.Timestamp(end)
+
+    result_df = df.loc[mask].reset_index(drop=True)
+
+    if VERBOSE:
+        print(f"\n{col} filter {start} -> {end}: ")
+        print(f"results {len(df)} -> {len(result_df)}")
+
+    return result_df
+
 def print_value_counts(
     df: "pd.DataFrame",
     col: str, *,
@@ -77,16 +86,7 @@ def count_former_names_per_column(
     normalize: bool = True,
 ) -> Dict[str, int]:
     """
-    Count how many records in each column of df match a former territory name.
-    
-    Args:
-        df: DataFrame to check (e.g., results_df, goalscorers_df)
-        former_names_df: DataFrame with former territory names
-        former_col: Column name in former_names_df containing former names
-        normalize: Whether to normalize text (case + whitespace) before matching
-    
-    Returns:
-        Dictionary mapping column_name -> count of records with former names
+    Count how many records in each column of df match a former territory name
     """
     result = {}
     
@@ -113,10 +113,7 @@ def count_former_names_detailed(
     normalize: bool = True,
 ) -> Dict[str, Dict[str, int]]:
     """
-    More detailed version: returns which former names actually appear in the data.
-    
-    Returns:
-        Dictionary mapping column_name -> {former_name: count, ...}
+    More detailed version: returns which former names actually appear in the data
     """
     result = {}
     
@@ -311,19 +308,31 @@ def load_data():
     goalscorers_df = load_csv(files["goalscorers"])
     former_names_df = load_csv(files["former_names"])
 
-    """
+    # Dates are read as str, convert before comparing
+    for df in (results_df, shootouts_df, goalscorers_df):
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    former_names_df["start_date"] = pd.to_datetime(former_names_df["start_date"])
+    former_names_df["end_date"] = pd.to_datetime(former_names_df["end_date"])
+
+    # Limit to the requested window
+    start_date = None 
+    end_date = '2026-06-10'
+    results_df = filter_by_date(results_df, "date", start_date, end_date)
+    shootouts_df = filter_by_date(shootouts_df, "date", start_date, end_date)
+    goalscorers_df = filter_by_date(goalscorers_df, "date", start_date, end_date)
+
     counts = count_former_names_per_column(results_df, former_names_df)
-    print(counts)
+    if VERBOSE:
+        print(counts)
 
     detailed = count_former_names_detailed(results_df, former_names_df)
     for col, matches in detailed.items():
-        if matches:
+        if matches and VERBOSE:
             print(f"\n{col}:")
             for former_name, count in matches.items():
                 print(f"  {former_name}: {count} records")
-    """
 
-    # Toggle: set to False if you want to use current territory names.
+    # Toggle: set to False if you want to use current territory names
     FORMER_NAMES = False
     USE_DATE_AWARE_MAPPING = False
     if not FORMER_NAMES:
@@ -388,6 +397,7 @@ def load_data():
 
     #elapsed = time.perf_counter() - start
     #print(f"Elapsed: {elapsed:.4f} seconds")
+
     print("\nAll CSV files loaded successfully.")
     return results_df, shootouts_df, goalscorers_df, former_names_df
 
