@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from load_data import load_data
+from .load_data import load_data
 
 # ===== CONFIG =====
 ROOT = Path(__file__).resolve().parents[2]  # repo root
@@ -1174,7 +1174,7 @@ def analyze_data():
     score_distributions(results)
     teams(results, plot=False, top_n=20, order="count")
     shootout_integrity(results, shootouts, bin_size=10, plot=False)
-    goalscorer_integrity(results, goalscorers, bin_size=10, top_n=10, top_m=3, top_p=10, plot=True)
+    goalscorer_integrity(results, goalscorers, bin_size=10, top_n=10, top_m=3, top_p=10, plot=False)
 
     if VERBOSE:
         print(f"\nFigures saved to {FIG_DIR.resolve()}")
