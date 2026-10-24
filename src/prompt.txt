@@ -1,0 +1,64 @@
+I'm continuing a project from a previous chat. Here is the context.
+
+## Project
+FIFA 2026 World Cup predictor in Python (pandas, matplotlib, scipy; scikit-learn planned). I'm a computer science student building a GitHub portfolio for data analyst roles, so I want to understand the code, not just receive it. Please explain what the code does and why. I work on Windows, and the earlier traceback looked like Visual Studio.
+
+The 2026 World Cup has now been played. My data stops at 2026-06-10, the day before kickoff, so the project is effectively a backtest. I may update the vendored dataset to get the real results and score my predictions against them.
+
+## Data (vendor/international_results, from the GitHub repo martj42/international_results)
+- results.csv: 49,505 rows. Columns: date, home_team, away_team, home_score, away_score, tournament, city, country, neutral. Spans 1872-11-30 to 2026-06-10.
+- shootouts.csv: 682 rows. Columns: date, home_team, away_team, winner, first_shooter (mostly missing).
+- goalscorers.csv: 47,886 rows. Columns: date, home_team, away_team, team, scorer, minute, own_goal, penalty.
+- former_names.csv: 36 rows. Columns: current, former, start_date, end_date.
+- results.csv has 873 null `country` values. I haven't investigated them yet.
+- My later analysis reported 49,405 matches instead of 49,505. I haven't verified why; probably rows with missing scores.
+- load_data() in load_data.py returns results_df, shootouts_df, goalscorers_df, former_names_df. It standardises former team names to current ones, ignoring dates. This is a modelling decision, and the "Ireland" mapping is ambiguous. I haven't verified it.
+- Planned: add start_date/end_date parameters to load_data() so I can freeze the data at 2026-06-10.
+
+## Directory (currently being reorganised)
+World-Cup-2026-predictor/
+├── source/
+│   ├── main.py
+│   ├── data/
+│   │   ├── load_data.py
+│   │   └── analyse_data.py
+│   ├── features/
+│   │   ├── elo.py              # was elo_model.py
+│   │   ├── goals.py            # was score_model.py (attack/defence strength)
+│   │   ├── shootouts.py        # was penalty_model.py
+│   │   └── build_features.py   # runs all three, writes one row per match to data/processed/
+│   ├── models/
+│   │   ├── classifiers.py      # the 4 sklearn pipelines
+│   │   ├── ensemble.py         # averages their probabilities
+│   │   ├── train.py
+│   │   └── evaluate.py
+│   └── simulation/
+│       ├── match_predictor.py
+│       └── tournament.py
+
+
+## Known problems I haven't resolved
+- main.py imports `data.analyze_data` but calls `analyse_data()`. The spelling is inconsistent (z versus s).
+- analyze_data.py does `from load_data import load_data`, which breaks when run via main.py because sys.path[0] is the entry script's folder. Fix: `from .load_data import load_data`, with a try/except fallback, or always run from main.py.
+- main.py loads the data twice. Plan: analyze_data(frames=None) accepts frames.
+- FIG_DIR should be anchored to ROOT, not a relative path.
+
+## Analysis code conventions (analyse_data.py, finished)
+- A thin orchestrator calls one `_print_*` helper per printed section, each with `plot: bool`.
+- Shared helpers: section, _subsection, save_fig, counts_and_shares, _bin_start, _bin_label, _BIN_TITLES, _apply_bin_ticks, pair_key, tournament_group, prepare.
+- Tables print counts and shares to 2 decimal places. Plots use a manually defined colour palette, major and minor gridlines, and set_axisbelow(True).
+- bin_size (1, 5, 10 years) is a parameter. I like comment/uncomment toggles written as `if True: ... else: ...` blocks.
+- Sections cover: missing values and types, duplicates, former names, matches over time, tournaments by group, score distributions, teams, shootouts versus results, goalscorers.
+- I planned to write up findings in a Jupyter notebook (notebooks/data_findings.ipynb) that calls these functions. I have used LaTeX before.
+
+## Findings so far
+- Goals per match fell from about 4 in the 1920s to about 2.5 in the 1980s, then settled around 2.7 to 2.8 since 2000.
+- Outcomes by venue, non-neutral: away 9,596, draw 8,308, home 18,443. Neutral: away 4,364, draw 2,925, home 5,769. Home wins fall about 6.6 points at neutral venues, draws barely change, and the "home" label still wins more often at neutral venues (44% versus 33%).
+- A chi-square test and Poisson checks were written but I haven't pasted their output yet. Overdispersion is expected because team strength varies.
+- The top 20 teams by matches played are all long-established teams (Sweden, England, Argentina, Brazil and so on, 850 to 1,100 matches each). I was going to compare against a 2000-onwards window.
+
+## Modelling plan
+- Features are built by replaying matches chronologically. Every feature uses only matches strictly before the match (no look-ahead), checked by a truncation test (check_no_lookahead).
+- elo.py: Elo ratings with K-factor by tournament group, a home advantage that turns off when neutral, and a goal-difference multiplier. Constants are placeholders to tune.
+- goals.py: attack and defence strength from time-decayed goals for and against, with shrinkage toward the global average. Version 1 has no opponent adjustment, behind the OPPONENT_ADJUSTED flag.
+- shootouts.py: shrunken shootout win rate and log5
