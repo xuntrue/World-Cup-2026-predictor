@@ -8,7 +8,7 @@ import time
 # ===== CONFIG =====
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 DATA_DIR = ROOT / "vendor" / "international_results"
-VERBOSE = False # Set to True to see detailed loading/standarization output
+VERBOSE = True # Set to True to see detailed loading/standarization output
 
 # ===== FILSE =====
 files = {
@@ -78,47 +78,10 @@ def print_all_columns_value_counts(
     for col in df.columns:
         print_value_counts(df, col, normalize=normalize, dropna=dropna, topk=topk)
 
-def count_former_names_per_column(
-    df: pd.DataFrame,
-    former_names_df: pd.DataFrame,
-    *,
-    former_col: str = "former",
-    normalize: bool = True,
-) -> Dict[str, int]:
-    """
-    Count how many records in each column of df match a former territory name
-    """
+def count_former_names_detailed(df: pd.DataFrame, former_names_df: pd.DataFrame, *, former_col: str = "former", normalize: bool = True,) -> Dict[str, Dict[str, int]]:
+    """ More detailed version: returns which former names actually appear in the data """
     result = {}
-    
-    # Extract unique former names
-    former_names = set(former_names_df[former_col].dropna())
-    
-    if normalize:
-        former_names = {_normalize_team_text(name) for name in former_names}
-    
-    # Check each column in the dataframe
-    for col in df.columns:
-        if df[col].dtype == 'object' or pd.api.types.is_string_dtype(df[col]):
-            normalized = df[col].map(lambda x: _normalize_team_text(x))
-            count = (normalized.isin(former_names)).sum()
-            result[col] = count
-    
-    return result
-
-def count_former_names_detailed(
-    df: pd.DataFrame,
-    former_names_df: pd.DataFrame,
-    *,
-    former_col: str = "former",
-    normalize: bool = True,
-) -> Dict[str, Dict[str, int]]:
-    """
-    More detailed version: returns which former names actually appear in the data
-    """
-    result = {}
-    
-    # Extract unique former names
-    former_names = former_names_df[former_col].dropna().unique()
+    former_names = former_names_df[former_col].dropna().unique() # Extract unique former names
     
     # Check each column in the dataframe
     for col in df.columns:
@@ -321,9 +284,6 @@ def load_data():
     shootouts_df = filter_by_date(shootouts_df, "date", start_date, end_date)
     goalscorers_df = filter_by_date(goalscorers_df, "date", start_date, end_date)
 
-    counts = count_former_names_per_column(results_df, former_names_df)
-    if VERBOSE:
-        print(counts)
 
     detailed = count_former_names_detailed(results_df, former_names_df)
     for col, matches in detailed.items():
@@ -372,6 +332,7 @@ def load_data():
                     use_date_aware_mapping=USE_DATE_AWARE_MAPPING,
                     date_col="date",
                 )
+        
         if VERBOSE:
             if USE_DATE_AWARE_MAPPING:
                 print("\nAll team names standardized using date-aware former->current mapping.")
@@ -380,9 +341,19 @@ def load_data():
 
             # Check counts after standardization
             print("\n=== Verification ===")
-            counts_after = count_former_names_per_column(results_df, former_names_df)
-            print(f"Former names remaining: {counts_after}")
-        
+            detailed = count_former_names_detailed(results_df, former_names_df)
+            total_remaining = sum(sum(matches.values()) for matches in detailed.values())
+
+            if total_remaining == 0:
+                print("Former names remaining: \nnone (all names standardised)")
+            else:
+                print(f"Former names remaining: {total_remaining} records")
+                for col, matches in detailed.items():
+                    if matches:
+                        print(f"\n{col}:")
+                        for former_name, count in matches.items():
+                            print(f"  {former_name}: {count} records")
+
             # Show specific examples of replacements
             print("\nExample replacements in results_df:")
             detailed_after = count_former_names_detailed(results_df, former_names_df)

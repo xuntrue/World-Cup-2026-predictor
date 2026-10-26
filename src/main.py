@@ -6,10 +6,7 @@ from data.analyze_data import analyze_data
 def main():
     # Load all dataframes
     results_df, shootouts_df, goalscorers_df, former_names_df = load_data()
-    analyze_data() # Also called load_data()
-
-    # Load all dataframes
-    #results_df, shootouts_df, goalscorers_df = load_data()
+    #analyze_data() # Also called load_data()
 
     # Get team elo ratings
     #team_ratings, _ = load_elo_results()
