@@ -8,7 +8,7 @@ import time
 # ===== CONFIG =====
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 DATA_DIR = ROOT / "vendor" / "international_results"
-VERBOSE = True # Set to True to see detailed loading/standarization output
+VERBOSE = False # Set to True to see detailed loading/standarization output
 
 # ===== FILSE =====
 files = {
@@ -52,8 +52,8 @@ def filter_by_date(df: pd.DataFrame, col: str, start=None, end=None) -> pd.DataF
     result_df = df.loc[mask].reset_index(drop=True)
 
     if VERBOSE:
-        print(f"\n{col} filter {start} -> {end}: ")
-        print(f"results {len(df)} -> {len(result_df)}")
+        print(f"Column '{col}' filter {start} -> {end}: ")
+        print(f"results {len(df)} -> {len(result_df)}\n")
 
     return result_df
 
@@ -271,6 +271,8 @@ def load_data():
     goalscorers_df = load_csv(files["goalscorers"])
     former_names_df = load_csv(files["former_names"])
 
+    print("\n=== Finished loading all files ===\n") if VERBOSE else None
+
     # Dates are read as str, convert before comparing
     for df in (results_df, shootouts_df, goalscorers_df):
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
@@ -280,17 +282,24 @@ def load_data():
     # Limit to the requested window
     start_date = None 
     end_date = '2026-06-10'
+    print(f"=== Filtering all files between '{start_date}' to '{end_date}' ===\n") if VERBOSE else None
+
+    print(f"Filtering results_df. . .") if VERBOSE else None
     results_df = filter_by_date(results_df, "date", start_date, end_date)
+    print(f"Filtering shootouts_df. . .") if VERBOSE else None
     shootouts_df = filter_by_date(shootouts_df, "date", start_date, end_date)
+    print(f"Filtering goalscorers_df. . .") if VERBOSE else None
     goalscorers_df = filter_by_date(goalscorers_df, "date", start_date, end_date)
 
-
     detailed = count_former_names_detailed(results_df, former_names_df)
+    total_matches = sum(sum(matches.values()) for matches in detailed.values())
+    print(f"Former names found in results_df: {total_matches} records") if VERBOSE else None
     for col, matches in detailed.items():
         if matches and VERBOSE:
-            print(f"\n{col}:")
+            print(f"{col}:")
             for former_name, count in matches.items():
                 print(f"  {former_name}: {count} records")
+            print("")
 
     # Toggle: set to False if you want to use current territory names
     FORMER_NAMES = False
@@ -368,8 +377,8 @@ def load_data():
 
     #elapsed = time.perf_counter() - start
     #print(f"Elapsed: {elapsed:.4f} seconds")
-
-    print("\nAll CSV files loaded successfully.")
+    print("") if VERBOSE else None
+    print("All CSV files loaded successfully.")
     return results_df, shootouts_df, goalscorers_df, former_names_df
 
 if __name__ == "__main__":

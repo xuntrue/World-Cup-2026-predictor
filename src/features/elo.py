@@ -54,7 +54,7 @@ import matplotlib.pyplot as plt
 import os
 import pandas as pd
 
-INITIAL_RATING = 1500.0
+INITIAL_RATING = 1000.0
 HOME_ADVANTAGE = 100.0   # rating points added to the home side at non-neutral venues
 K_BY_GROUP = {           # larger K = ratings react faster to that kind of match
     "World Cup": 60,

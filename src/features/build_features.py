@@ -1,5 +1,4 @@
 """
-
 Assemble the per-match feature table that the models train on.
 
 The three feature modules (elo.py, goals.py, shootouts.py) never
