@@ -1,52 +1,4 @@
-"""Elo ratings for national teams, built by replaying every match in date order.
-
-Purpose:
-    Turn the match history into a rating for each team *as it stood immediately
-    before each match*, plus a table of final ratings for predicting future
-    fixtures. Elo sees only the result (win/draw/loss) and its margin. How a
-    team's goals are split between attack and defence is handled in goals.py.
-
-Inputs:
-    results: DataFrame from load_data(), after prepare(), with columns
-        date, home_team, away_team, home_score, away_score, tournament, neutral.
-        Must be sorted by date. Rows with a missing score are skipped.
-
-Outputs:
-    1. A per-match DataFrame with the same index as ``results``:
-           elo_home_pre   rating of the home side before the match
-           elo_away_pre   rating of the away side before the match
-           elo_diff       elo_home_pre - elo_away_pre
-    2. A dict[str, float] with every team's rating after the last match.
-
-How a match updates the ratings:
-    1. Look up both ratings (a new team starts at INITIAL_RATING).
-    2. Record them as the pre-match values. Nothing from this match may be
-       used before this step.
-    3. Expected score for the home side:
-           E_home = 1 / (1 + 10 ** (-(R_home + H - R_away) / 400))
-       where H is HOME_ADVANTAGE, or 0 when the match is neutral.
-    4. Actual score S_home is 1 for a win, 0.5 for a draw, 0 for a loss.
-    5. Update:  delta = K * G * (S_home - E_home)
-           R_home += delta
-           R_away -= delta
-       K depends on the tournament group, and G grows with the goal margin.
-
-No look-ahead:
-    A match's features come only from matches strictly before it. This is
-    checked in build_features.check_no_lookahead().
-
-Depends on:
-    tournament_group() to map a tournament name to a coarse group. It currently
-    lives in analyse_data.py and should move to a shared module so the
-    analysis and the ratings agree on the groups.
-
-Tuning:
-    Every constant below is a starting value, not a fitted one. Tune K, H and
-    the multiplier by minimising log loss on held-out matches.
-"""
-
 from __future__ import annotations
-from load_data import load_data
 
 import numpy as np
 import math
@@ -64,55 +16,148 @@ K_BY_GROUP = {           # larger K = ratings react faster to that kind of match
     "Friendly": 20,
 }
 
+# Substrings that mark a continental championship in the tournament column.
+_CONTINENTAL_KEYWORDS = (
+    "UEFA Euro", "Copa Am", "African Cup of Nations", "AFC Asian Cup",
+    "Gold Cup", "Confederations Cup", "Oceania Nations Cup",
+)
+
+def _fallback_group(tournament: str) -> str:
+    """
+    Rough tournament grouping, used only if no group_fn is supplied
+    Order matters: "FIFA World Cup qualification" contains "World Cup", so qualifiers must be tested before the World Cup itself
+    """
+    if tournament == "Friendly":
+        return "Friendly"
+    if "qualification" in tournament:
+        return "Qualifier"
+    if tournament == "FIFA World Cup":
+        return "World Cup"
+    if any(key in tournament for key in _CONTINENTAL_KEYWORDS):
+        return "Continental"
+    return "Other"
+
 
 def expected_score(rating_diff: float) -> float:
-    """Probability-like expected score for the side with the higher rating.
-
-    Args:
-        rating_diff: Own rating (plus any home advantage) minus the opponent's.
-
-    Returns:
-        A value between 0 and 1: the expected share of the points, where a draw
-        counts as half. 0.5 means evenly matched.
-    """
-    raise NotImplementedError
-
+    """ Probability-like expected score for the side with the higher rating """
+    return 1.0 / (1.0 + 10.0 ** (-rating_diff / 400.0))
 
 def goal_diff_multiplier(goal_diff: int) -> float:
-    """Scale an update by the margin of victory.
-
-    Args:
-        goal_diff: Absolute goal difference of the match (0 for a draw).
-
-    Returns:
-        A multiplier G >= 1 that grows slowly with the margin, so a 5-0 moves
-        ratings more than a 1-0 without letting one blowout dominate.
-    """
-    raise NotImplementedError
+    """ Scale an update by the margin of victory """
+    goal_diff = abs(int(goal_diff))
+    if goal_diff <= 1:
+        return 1.0
+    if goal_diff == 2:
+        return 1.5
+    return (11.0 + goal_diff) / 8.0   # 3 -> 1.75, 5 -> 2.0, 9 -> 2.5
 
 
-def k_factor(tournament: str) -> float:
-    """Look up how strongly a match of this kind moves the ratings.
+def k_factor(tournament: str, group_fn: Callable[[str], str] | None = None) -> float:
+    group = (group_fn or _fallback_group)(tournament)
+    return float(K_BY_GROUP.get(group, K_BY_GROUP["Other"]))
 
-    Args:
-        tournament: The raw tournament name from results.
+def compute_elo(results: pd.DataFrame, group_fn: Callable[[str], str] | None = None) -> tuple[pd.DataFrame, dict[str, float]]:
+    """ Replay all matches in date order and record ratings before each one """
+    if not results["date"].is_monotonic_increasing:
+        raise ValueError("results must be sorted by date before computing Elo.")
 
-    Returns:
-        K for the tournament's group, from K_BY_GROUP.
-    """
-    raise NotImplementedError
+    n = len(results)
+    # Work on plain numpy arrays: much faster than .iloc in a 49k-row loop.
+    dates = results["date"].to_numpy()
+    homes = results["home_team"].to_numpy()
+    aways = results["away_team"].to_numpy()
+    home_goals = results["home_score"].to_numpy(dtype=float)
+    away_goals = results["away_score"].to_numpy(dtype=float)
+    tournaments = results["tournament"].to_numpy()
+    neutral = results["neutral"].to_numpy(dtype=bool)
+
+    elo_home_pre = np.full(n, np.nan)
+    elo_away_pre = np.full(n, np.nan)
+
+    ratings: dict[str, float] = {}
+    k_cache: dict[str, float] = {}   # tournament name -> K, so we group each name once
+
+    # Row ranges [start, end) that share the same date.
+    cuts = np.flatnonzero(dates[1:] != dates[:-1]) + 1
+    starts = np.concatenate(([0], cuts))
+    ends = np.concatenate((cuts, [n]))
+
+    for start, end in zip(starts, ends):
+        pending: dict[str, float] = {}   # team -> total rating change for this date
+
+        for i in range(start, end):
+            if np.isnan(home_goals[i]) or np.isnan(away_goals[i]):
+                continue   # no result: leave NaN and do not update
+
+            home, away = homes[i], aways[i]
+            r_home = ratings.get(home, INITIAL_RATING)   # start-of-date ratings
+            r_away = ratings.get(away, INITIAL_RATING)
+
+            # Record the pre-match values BEFORE any update from this match.
+            elo_home_pre[i] = r_home
+            elo_away_pre[i] = r_away
+
+            h = 0.0 if neutral[i] else HOME_ADVANTAGE
+            expected_home = expected_score(r_home + h - r_away)
+
+            if home_goals[i] > away_goals[i]:
+                actual_home = 1.0
+            elif home_goals[i] == away_goals[i]:
+                actual_home = 0.5
+            else:
+                actual_home = 0.0
+
+            tournament = tournaments[i]
+            if tournament not in k_cache:
+                k_cache[tournament] = k_factor(tournament, group_fn)
+
+            g = goal_diff_multiplier(home_goals[i] - away_goals[i])
+            delta = k_cache[tournament] * g * (actual_home - expected_home)
+
+            pending[home] = pending.get(home, 0.0) + delta
+            pending[away] = pending.get(away, 0.0) - delta
+
+        # Apply the whole date's updates at once.
+        for team, delta in pending.items():
+            ratings[team] = ratings.get(team, INITIAL_RATING) + delta
+
+    match_ratings = pd.DataFrame(
+        {
+            "elo_home_pre": elo_home_pre,
+            "elo_away_pre": elo_away_pre,
+            "elo_diff": elo_home_pre - elo_away_pre,
+        },
+        index=results.index,
+    )
+    return match_ratings, ratings
 
 
-def compute_elo(results: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, float]]:
-    """Replay all matches in date order and record ratings before each one.
+if __name__ == "__main__":
+    # Tiny self-test with made-up matches (no data files needed)
 
-    Args:
-        results: See the module docstring. Must be sorted by date.
+    assert abs(expected_score(0) - 0.5) < 1e-12
+    assert expected_score(400) > 0.9 > 0.1 > expected_score(-400)
+    assert goal_diff_multiplier(0) == goal_diff_multiplier(1) == 1.0
+    assert goal_diff_multiplier(5) == 2.0
 
-    Returns:
-        A tuple (match_ratings, final_ratings).
-        match_ratings has columns elo_home_pre, elo_away_pre, elo_diff and the
-        same index as ``results``; skipped rows hold NaN.
-        final_ratings maps each team to its rating after the last match.
-    """
-    raise NotImplementedError
+    toy = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2000-01-01", "2000-01-02", "2000-01-02"]),
+            "home_team": ["A", "A", "B"],
+            "away_team": ["B", "C", "C"],
+            "home_score": [2, 1, 0],
+            "away_score": [0, 1, 0],
+            "tournament": ["Friendly", "Friendly", "FIFA World Cup"],
+            "neutral": [False, True, True],
+        }
+    )
+    pre, final = compute_elo(toy)
+    print(pre)
+    print(final)
+
+    # Every team's first match sees the starting rating.
+    assert pre.loc[0, "elo_home_pre"] == INITIAL_RATING
+
+    # Updates are zero-sum, so the total rating is conserved.
+    assert abs(sum(final.values()) - 3 * INITIAL_RATING) < 1e-9
+    print("self-test passed")
